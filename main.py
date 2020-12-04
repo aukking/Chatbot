@@ -47,9 +47,10 @@ REPLY = data.Field(init_token='<sos>',
 
 fields = ((None, None), ('message', MESSAGE), ('reply', REPLY))
 
+# using the small_train_messages to help with training time
 train_data, valid_data = data.TabularDataset.splits(
-    path='',
-    train='train_messages_30.csv',
+    path='data',
+    train='small_train_messages.csv',
     validation='valid_messages.csv',
     test=None,
     format='csv',
@@ -59,13 +60,13 @@ train_data, valid_data = data.TabularDataset.splits(
 
 MESSAGE.build_vocab(
     train_data,
-    vectors='glove.6B.300d',
+    vectors='glove.6B.50d',
     unk_init=torch.Tensor.normal_
 )
 
 REPLY.build_vocab(
     train_data,
-    vectors='glove.6B.300d',
+    vectors='glove.6B.50d',
     unk_init=torch.Tensor.normal_
 )
 
@@ -286,10 +287,10 @@ class Trainer(object):
 
         self.model.eval()  # Run model in eval mode (disables dropout layer)
 
-        batch_wise_text = []
-        batch_wise_true_labels = []
-        batch_wise_predictions = []
-        batch_wise_acc = 0
+        # batch_wise_text = []
+        # batch_wise_true_labels = []
+        # batch_wise_predictions = []
+        # batch_wise_acc = 0
 
         loss_history = []
         running_loss = 0.
@@ -301,7 +302,7 @@ class Trainer(object):
                 y = batch.reply.to(self.device)
                 # batch[0] shape: (batch_size, input_size)
 
-                logits = self.model(X)  # Run forward pass (except we don't store gradients)
+                logits = self.model(X, y, teacher_forcing_ratio=0)  # Run forward pass (except we don't store gradients)
                 # logits shape: (batch_size, num_classes)
 
                 # y = y.type_as(logits)
@@ -313,9 +314,6 @@ class Trainer(object):
 
                 loss = self.loss_fn(logits, y)  # Compute loss
                 # No backprop is done during validation
-
-                # Instead of using CrossEntropyLoss, you use BCEWithLogitsLoss
-                # BCEWithLogitsLoss - independently calculates loss for each class
 
                 loss_history.append(loss.item())
 
@@ -336,11 +334,11 @@ class Trainer(object):
                 # predictions = torch.where(probs > self.threshold, 1, 0)
                 # predictions shape: (batch_size)
 
-                acc = categorical_accuracy(logits, y, self.tag_pad_idx).item()
+                # acc = categorical_accuracy(logits, y, self.tag_pad_idx).item()
 
-                batch_wise_acc += acc
+                # batch_wise_acc += acc
 
-        print(f'Epoch Acc: {batch_wise_acc / len(loader)}')
+        # print(f'Epoch Acc: {batch_wise_acc / len(loader)}')
 
         return loss_history, running_loss_history
 
@@ -445,7 +443,7 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-BATCH_SIZE = 128
+BATCH_SIZE = 64
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -457,13 +455,16 @@ train_iterator, valid_iterator = data.BucketIterator.splits(
 
 INPUT_DIM = len(MESSAGE.vocab)
 OUTPUT_DIM = len(REPLY.vocab)
-ENC_EMBEDDING_DIM = 256
-DEC_EMBEDDING_DIM = 256
-HIDDEN_DIM = 512
+ENC_EMBEDDING_DIM = 50
+DEC_EMBEDDING_DIM = 50
+HIDDEN_DIM = 50
 N_LAYERS = 2
 ENC_DROPOUT = 0.25
 DEC_DROPOUT = 0.25
 REPLY_PAD_IDX = REPLY.vocab.stoi[REPLY.pad_token]
+
+# variabel used to toggle if we want to train or run the model
+TRAIN = False
 
 enc = Encoder(INPUT_DIM, ENC_EMBEDDING_DIM, HIDDEN_DIM, N_LAYERS, ENC_DROPOUT)
 dec = Decoder(OUTPUT_DIM, DEC_EMBEDDING_DIM, HIDDEN_DIM, N_LAYERS, DEC_DROPOUT)
@@ -471,13 +472,27 @@ dec = Decoder(OUTPUT_DIM, DEC_EMBEDDING_DIM, HIDDEN_DIM, N_LAYERS, DEC_DROPOUT)
 model = Seq2Seq(enc, dec, device).to(device)
 print(f'The model has {count_parameters(model):,} trainable parameters')
 
-model.apply(init_weights)
-pretrained_embeddings = MESSAGE.vocab.vectors
-
 MESSAGE_PAD_IDX = REPLY.vocab.stoi[REPLY.pad_token]
 criterion = nn.CrossEntropyLoss(ignore_index=MESSAGE_PAD_IDX)
-
 optimizer = optim.Adam(model.parameters())
 
-lstm_trainer = Trainer(model, optimizer, criterion)
-lstm_trainer.run_training(train_iterator, valid_iterator, REPLY.vocab.stoi, n_epochs=10)
+if TRAIN:
+    model.apply(init_weights)
+    # pretrained_embeddings = MESSAGE.vocab.vectors
+    lstm_trainer = Trainer(model, optimizer, criterion, device=device)
+
+    lstm_trainer.run_training(train_iterator, valid_iterator, REPLY.vocab.stoi, n_epochs=10)
+
+    torch.save(model.state_dict(), 'first_mode.pt')
+else:
+    model.load_state_dict(torch.load('first_model.pt'))
+    lstm_trainer = Trainer(model, optimizer, criterion, device=device)
+
+    # first step to predict is to vectorize a message
+    message = 'hello world'
+
+    # NOTE this is the part that needs to be worked on
+
+
+
+
