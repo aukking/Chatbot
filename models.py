@@ -22,15 +22,16 @@ from itertools import chain
 from tqdm.auto import tqdm
 
 class Encoder(nn.Module):
-    def __init__(self, input_dim, emb_dim, hid_dim, n_layers, dropout):
+    def __init__(self, input_dim, emb_dim, hid_dim, n_layers, dropout, bidirectional=True):
         super().__init__()
 
         self.hid_dim = hid_dim
         self.n_layers = n_layers
+        self.bidirectional = bidirectional
 
         self.embedding = nn.Embedding(input_dim, emb_dim)
 
-        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, dropout=dropout)
+        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, bidirectional=bidirectional, dropout=dropout)
 
         self.dropout = nn.Dropout(dropout)
 
@@ -53,18 +54,19 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, output_dim, emb_dim, hid_dim, n_layers, dropout):
+    def __init__(self, output_dim, emb_dim, hid_dim, n_layers, dropout, bidirectional=True):
         super().__init__()
 
         self.output_dim = output_dim
         self.hid_dim = hid_dim
         self.n_layers = n_layers
+        self.bidirectional = bidirectional
 
         self.embedding = nn.Embedding(output_dim, emb_dim)
 
-        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, dropout=dropout)
+        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, bidirectional=bidirectional, dropout=dropout)
 
-        self.fc_out = nn.Linear(hid_dim, output_dim)
+        self.fc_out = nn.Linear(hid_dim * 2 if bidirectional else hid_dim, output_dim)
 
         self.dropout = nn.Dropout(dropout)
 
@@ -104,12 +106,13 @@ class Decoder(nn.Module):
 
 
 class Seq2Seq(nn.Module):
-    def __init__(self, encoder, decoder, device):
+    def __init__(self, encoder, decoder, device, max_seq_length=20):
         super().__init__()
 
         self.encoder = encoder
         self.decoder = decoder
         self.device = device
+        self.max_seq_length = max_seq_length
 
         assert encoder.hid_dim == decoder.hid_dim, \
             "Hidden dimensions of encoder and decoder must be equal!"
@@ -122,36 +125,55 @@ class Seq2Seq(nn.Module):
         # teacher_forcing_ratio is probability to use teacher forcing
         # e.g. if teacher_forcing_ratio is 0.75 we use ground-truth inputs 75% of the time
 
-        batch_size = trg.shape[1]
-        trg_len = trg.shape[0]
+        batch_size = src.shape[1]
         trg_vocab_size = self.decoder.output_dim
-
-        # tensor to store decoder outputs
-        outputs = torch.zeros(trg_len, batch_size, trg_vocab_size).to(self.device)
-
         # last hidden state of the encoder is used as the initial hidden state of the decoder
         hidden, cell = self.encoder(src)
 
-        # first input to the decoder is the <sos> tokens
-        input = trg[0, :]
+        if teacher_forcing_ratio != 0:
+            trg_len = trg.shape[0]
 
-        for t in range(1, trg_len):
-            # insert input token embedding, previous hidden and previous cell states
-            # receive output tensor (predictions) and new hidden and cell states
-            output, hidden, cell = self.decoder(input, hidden, cell)
+            # tensor to store decoder outputs
+            outputs = torch.zeros(trg_len, batch_size, trg_vocab_size).to(self.device)
 
-            # place predictions in a tensor holding predictions for each token
-            outputs[t] = output
+            # first input to the decoder is the <sos> tokens
+            input = trg[0, :]
 
-            # decide if we are going to use teacher forcing or not
-            teacher_force = random.random() < teacher_forcing_ratio
+            for t in range(1, trg_len):
+                # insert input token embedding, previous hidden and previous cell states
+                # receive output tensor (predictions) and new hidden and cell states
+                output, hidden, cell = self.decoder(input, hidden, cell)
 
-            # get the highest predicted token from our predictions
-            top1 = output.argmax(1)
+                # place predictions in a tensor holding predictions for each token
+                outputs[t] = output
 
-            # if teacher forcing, use actual next token as next input
-            # if not, use predicted token
-            input = trg[t] if teacher_force else top1
+                # decide if we are going to use teacher forcing or not
+                teacher_force = random.random() < teacher_forcing_ratio
+
+                # get the highest predicted token from our predictions
+                top1 = output.argmax(1)
+
+                # if teacher forcing, use actual next token as next input
+                # if not, use predicted token
+                input = trg[t] if teacher_force else top1
+        else:
+            outputs = torch.zeros(self.max_seq_length, batch_size, trg_vocab_size).to(self.device)
+            # first input to the decoder is the <sos> tokens
+            input = src[0, :]
+            eos = src[-1, :]
+            counter = 0
+            while not torch.all(torch.eq(input, eos)) and counter < self.max_seq_length:
+                # insert input token embedding, previous hidden and previous cell states
+                # receive output tensor (predictions) and new hidden and cell states
+                output, hidden, cell = self.decoder(input, hidden, cell)
+                # place predictions in a tensor holding predictions for each token
+                outputs[counter] = output
+                # get the highest predicted token from our predictions
+                top1 = output.argmax(1)
+                # if teacher forcing, use actual next token as next input
+                # if not, use predicted token
+                input = top1
+                counter += 1
 
         return outputs
 
@@ -249,7 +271,7 @@ class Trainer(object):
                 y = batch.reply.to(self.device)
                 # batch[0] shape: (batch_size, input_size)
 
-                logits = self.model(X, y, teacher_forcing_ratio=0)  # Run forward pass (except we don't store gradients)
+                logits = self.model(X, y, teacher_forcing_ratio=0.001)  # Run forward pass (except we don't store gradients)
                 # logits shape: (batch_size, num_classes)
 
                 # y = y.type_as(logits)

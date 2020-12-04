@@ -53,7 +53,8 @@ REPLY.build_vocab(
 # MESSAGE.build_vocab(train_data, min_freq=2)
 # REPLY.build_vocab(train_data, min_freq=2)
 
-BATCH_SIZE = 64
+# max batch size allowable on Austin's machine: 128
+BATCH_SIZE = 128
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -103,21 +104,14 @@ if TRAIN:
 
     lstm_trainer.run_training(train_iterator, valid_iterator, n_epochs=10)
 
-    torch.save(model.state_dict(), 'second_mode.pt')
+    torch.save(model.state_dict(), 'third_model.pt')
 
 else:
-    model.load_state_dict(torch.load('second_mode.pt'))
+    model.load_state_dict(torch.load('third_model.pt'))
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
     # first step to predict is to vectorize a message
-    message = 'Hi, who is your favorite football team?'
-    # message_embeddings = MESSAGE.vocab.vectors
-    # str2idx = MESSAGE.vocab.stoi
-    # vectorized_input = []
-    # for word in message.split():
-    #     vectorized_input.append(message_embeddings[str2idx[word]].unsqueeze(0))
-    #
-    # tensor_input = torch.cat(vectorized_input).unsqueeze(0)
+    message = 'Are you a fan of Google or Microsoft?'
 
     tensor_input, unks = vectorize_input(message, MESSAGE)
 
