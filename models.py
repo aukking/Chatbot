@@ -1,0 +1,424 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+from torchtext import data
+from torchtext import datasets
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score
+
+import spacy
+import numpy as np
+import pandas as pd
+
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+import time
+import math
+import random
+from itertools import chain
+from tqdm.auto import tqdm
+
+class Encoder(nn.Module):
+    def __init__(self, input_dim, emb_dim, hid_dim, n_layers, dropout):
+        super().__init__()
+
+        self.hid_dim = hid_dim
+        self.n_layers = n_layers
+
+        self.embedding = nn.Embedding(input_dim, emb_dim)
+
+        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, dropout=dropout)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, src):
+        # src = [src len, batch size]
+
+        embedded = self.dropout(self.embedding(src))
+
+        # embedded = [src len, batch size, emb dim]
+
+        outputs, (hidden, cell) = self.rnn(embedded)
+
+        # outputs = [src len, batch size, hid dim * n directions]
+        # hidden = [n layers * n directions, batch size, hid dim]
+        # cell = [n layers * n directions, batch size, hid dim]
+
+        # outputs are always from the top hidden layer
+
+        return hidden, cell
+
+
+class Decoder(nn.Module):
+    def __init__(self, output_dim, emb_dim, hid_dim, n_layers, dropout):
+        super().__init__()
+
+        self.output_dim = output_dim
+        self.hid_dim = hid_dim
+        self.n_layers = n_layers
+
+        self.embedding = nn.Embedding(output_dim, emb_dim)
+
+        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, dropout=dropout)
+
+        self.fc_out = nn.Linear(hid_dim, output_dim)
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, input, hidden, cell):
+        # input = [batch size]
+        # hidden = [n layers * n directions, batch size, hid dim]
+        # cell = [n layers * n directions, batch size, hid dim]
+
+        # n directions in the decoder will both always be 1, therefore:
+        # hidden = [n layers, batch size, hid dim]
+        # context = [n layers, batch size, hid dim]
+
+        input = input.unsqueeze(0)
+
+        # input = [1, batch size]
+
+        embedded = self.dropout(self.embedding(input))
+
+        # embedded = [1, batch size, emb dim]
+
+        output, (hidden, cell) = self.rnn(embedded, (hidden, cell))
+
+        # output = [seq len, batch size, hid dim * n directions]
+        # hidden = [n layers * n directions, batch size, hid dim]
+        # cell = [n layers * n directions, batch size, hid dim]
+
+        # seq len and n directions will always be 1 in the decoder, therefore:
+        # output = [1, batch size, hid dim]
+        # hidden = [n layers, batch size, hid dim]
+        # cell = [n layers, batch size, hid dim]
+
+        prediction = self.fc_out(output.squeeze(0))
+
+        # prediction = [batch size, output dim]
+
+        return prediction, hidden, cell
+
+
+class Seq2Seq(nn.Module):
+    def __init__(self, encoder, decoder, device):
+        super().__init__()
+
+        self.encoder = encoder
+        self.decoder = decoder
+        self.device = device
+
+        assert encoder.hid_dim == decoder.hid_dim, \
+            "Hidden dimensions of encoder and decoder must be equal!"
+        assert encoder.n_layers == decoder.n_layers, \
+            "Encoder and decoder must have equal number of layers!"
+
+    def forward(self, src, trg, teacher_forcing_ratio=0.5):
+        # src = [src len, batch size]
+        # trg = [trg len, batch size]
+        # teacher_forcing_ratio is probability to use teacher forcing
+        # e.g. if teacher_forcing_ratio is 0.75 we use ground-truth inputs 75% of the time
+
+        batch_size = trg.shape[1]
+        trg_len = trg.shape[0]
+        trg_vocab_size = self.decoder.output_dim
+
+        # tensor to store decoder outputs
+        outputs = torch.zeros(trg_len, batch_size, trg_vocab_size).to(self.device)
+
+        # last hidden state of the encoder is used as the initial hidden state of the decoder
+        hidden, cell = self.encoder(src)
+
+        # first input to the decoder is the <sos> tokens
+        input = trg[0, :]
+
+        for t in range(1, trg_len):
+            # insert input token embedding, previous hidden and previous cell states
+            # receive output tensor (predictions) and new hidden and cell states
+            output, hidden, cell = self.decoder(input, hidden, cell)
+
+            # place predictions in a tensor holding predictions for each token
+            outputs[t] = output
+
+            # decide if we are going to use teacher forcing or not
+            teacher_force = random.random() < teacher_forcing_ratio
+
+            # get the highest predicted token from our predictions
+            top1 = output.argmax(1)
+
+            # if teacher forcing, use actual next token as next input
+            # if not, use predicted token
+            input = trg[t] if teacher_force else top1
+
+        return outputs
+
+
+class Trainer(object):
+    """
+    Trainer for training a multi-class classification model
+    """
+
+    def __init__(self, model, optimizer, loss_fn, device="cpu", log_every_n=None):
+        self.model = model.to(device)
+        self.optimizer = optimizer
+        self.device = device
+        self.loss_fn = loss_fn
+
+        self.log_every_n = log_every_n if log_every_n else 0
+
+    def _print_summary(self):
+        print(self.model)
+        print(self.optimizer)
+        print(self.loss_fn)
+
+    def train(self, loader):
+        """
+        Run a single epoch of training
+        """
+
+        self.model.train()  # Run model in training mode
+
+        loss_history = []
+        running_loss = 0.
+        running_loss_history = []
+
+        for i, batch in tqdm(enumerate(loader)):
+            X = batch.message.to(self.device)
+            y = batch.reply.to(self.device)
+            # print(f'Train X_shape: {X.shape}')
+            # print(f'Train y_shape: {y.shape}')
+
+            self.optimizer.zero_grad()  # Always set gradient to 0 before computing it
+
+            logits = self.model(X, y)  # __call__ model() in this case: __call__ internally calls forward()
+            # [batch_size, num_classes]
+
+            # y = y.type_as(logits)
+
+            logits_dim = logits.shape[-1]
+
+            logits = logits[1:].view(-1, logits_dim)
+            y = y[1:].view(-1)
+
+            loss = self.loss_fn(logits, y)  # Compute loss: Cross entropy loss
+
+            loss_history.append(loss.item())
+
+            running_loss += (loss_history[-1] - running_loss) / (i + 1)  # Compute rolling average
+
+            if self.log_every_n and i % self.log_every_n == 0:
+                print("Running loss: ", running_loss)
+
+            running_loss_history.append(running_loss)
+
+            loss.backward()  # Perform backprop, which will compute dL/dw
+
+            nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)  # We clip gradient's norm to 3
+
+            self.optimizer.step()  # Update step: w = w - eta * dL / dW : eta = 1e-2 (0.01), gradient = 5e30; update value of 5e28
+
+        print("Epoch completed!")
+        print("Epoch Loss: ", running_loss)
+        print("Epoch Perplexity: ", math.exp(running_loss))
+
+        # The history information can allow us to draw a loss plot
+        return loss_history, running_loss_history
+
+    def evaluate(self, loader, labels):
+        """
+        Evaluate the model on a validation set
+        """
+
+        self.model.eval()  # Run model in eval mode (disables dropout layer)
+
+        # batch_wise_text = []
+        # batch_wise_true_labels = []
+        # batch_wise_predictions = []
+        # batch_wise_acc = 0
+
+        loss_history = []
+        running_loss = 0.
+        running_loss_history = []
+
+        with torch.no_grad():  # Disable gradient computation - required only during training
+            for i, batch in tqdm(enumerate(loader)):
+                X = batch.message.to(self.device)
+                y = batch.reply.to(self.device)
+                # batch[0] shape: (batch_size, input_size)
+
+                logits = self.model(X, y, teacher_forcing_ratio=0)  # Run forward pass (except we don't store gradients)
+                # logits shape: (batch_size, num_classes)
+
+                # y = y.type_as(logits)
+
+                logits_dim = logits.shape[-1]
+
+                logits = logits[1:].view(-1, logits_dim)
+                y = y[1:].view(-1)
+
+                loss = self.loss_fn(logits, y)  # Compute loss
+                # No backprop is done during validation
+
+                loss_history.append(loss.item())
+
+                running_loss += (loss_history[-1] - running_loss) / (i + 1)  # Compute rolling average
+
+                running_loss_history.append(running_loss)
+
+                # logits : [batch_size, num_classes] and each of the values in logits can be anything (-infinity, +infity)
+                # Converts the raw outputs into probabilities for each class using softmax
+                # probs = F.softmax(logits, dim=-1)
+                # probs = torch.sigmoid(logits)
+                # probs shape: (batch_size, num_classes)
+                # -1 dimension picks the last dimension in the shape of the tensor, in this case 'num_classes'
+
+                # softmax vector: [[0.1, 0.2, 0.6, 0.1, 0.0], [0.9, 0.01, 0.01, 0.01, 0.07]]
+                # output tensor: [2, 0]
+                # predictions = torch.argmax(probs, dim=-1) # Output predictions; Argmax picks the index with the highest probability among all the classes (choosing our most probable class)
+                # predictions = torch.where(probs > self.threshold, 1, 0)
+                # predictions shape: (batch_size)
+
+                # acc = categorical_accuracy(logits, y, self.tag_pad_idx).item()
+
+                # batch_wise_acc += acc
+
+        # print(f'Epoch Acc: {batch_wise_acc / len(loader)}')
+
+        return loss_history, running_loss_history
+
+    def predict(self, loader):
+        """
+        Evaluate the model on a validation set
+        """
+
+        self.model.eval()  # Run model in eval mode (disables dropout layer)
+
+        batch_wise_predictions = []
+
+        with torch.no_grad():  # Disable gradient computation - required only during training
+            for i, batch in tqdm(enumerate(loader)):
+                X = batch.message.to(self.device)
+                # print(f'Predict X_shape: {X.shape}')
+
+                logits = self.model(X)  # Run forward pass (except we don't store gradients)
+                # logits shape: (batch_size, num_classes)
+
+                # logits : [batch_size, num_classes] and each of the values in logits can be anything (-infinity, +infity)
+                # Converts the raw outputs into probabilities for each class using softmax
+                # probs = F.softmax(logits, dim=-1)
+                # probs = torch.sigmoid(logits)
+                # probs shape: (batch_size, num_classes)
+                # -1 dimension picks the last dimension in the shape of the tensor, in this case 'num_classes'
+
+                # softmax vector: [[0.1, 0.2, 0.6, 0.1, 0.0], [0.9, 0.01, 0.01, 0.01, 0.07]]
+                # output tensor: [2, 0]
+                # predictions = torch.argmax(probs, dim=-1) # Output predictions; Argmax picks the index with the highest probability among all the classes (choosing our most probable class)
+                # predictions = torch.where(probs > self.threshold, 1, 0)
+                # predictions shape: (batch_size)
+
+                batch_wise_predictions.append(logits)
+
+        return batch_wise_predictions
+
+    def predict_raw(self, message):
+        """
+        Evaluate the model on a validation set
+        """
+
+        self.model.eval()  # Run model in eval mode (disables dropout layer)
+
+        batch_wise_predictions = []
+
+        with torch.no_grad():  # Disable gradient computation - required only during training
+            for word in message:
+                X = word.to(self.device)
+                # print(f'Predict X_shape: {X.shape}')
+
+                logits = self.model(X, X, teacher_forcing_ratio=0)  # Run forward pass (except we don't store gradients)
+                # logits shape: (batch_size, num_classes)
+
+                # logits : [batch_size, num_classes] and each of the values in logits can be anything (-infinity, +infity)
+                # Converts the raw outputs into probabilities for each class using softmax
+                # probs = F.softmax(logits, dim=-1)
+                # probs = torch.sigmoid(logits)
+                # probs shape: (batch_size, num_classes)
+                # -1 dimension picks the last dimension in the shape of the tensor, in this case 'num_classes'
+
+                # softmax vector: [[0.1, 0.2, 0.6, 0.1, 0.0], [0.9, 0.01, 0.01, 0.01, 0.07]]
+                # output tensor: [2, 0]
+                # predictions = torch.argmax(probs, dim=-1) # Output predictions; Argmax picks the index with the highest probability among all the classes (choosing our most probable class)
+                # predictions = torch.where(probs > self.threshold, 1, 0)
+                # predictions shape: (batch_size)
+
+                batch_wise_predictions.append(logits)
+
+        return batch_wise_predictions
+
+    def get_model_dict(self):
+        return self.model.state_dict()
+
+    def run_training(self, train_loader, valid_loader, labels, n_epochs=10):
+        # Useful for us to review what experiment we're running
+        # Normally, you'd want to save this to a file
+        self._print_summary()
+
+        train_losses = []
+        train_running_losses = []
+
+        valid_losses = []
+        valid_running_losses = []
+
+        for i in range(n_epochs):
+            loss_history, running_loss_history = self.train(train_loader)
+            valid_loss_history, valid_running_loss_history = self.evaluate(valid_loader, labels)
+
+            train_losses.append(loss_history)
+            train_running_losses.append(running_loss_history)
+
+            valid_losses.append(valid_loss_history)
+            valid_running_losses.append(valid_running_loss_history)
+
+        # Training done, let's look at the loss curves
+        all_train_losses = list(chain.from_iterable(train_losses))
+        all_train_running_losses = list(chain.from_iterable(train_running_losses))
+
+        all_valid_losses = list(chain.from_iterable(valid_losses))
+        all_valid_running_losses = list(chain.from_iterable(valid_running_losses))
+
+        train_epoch_idx = range(len(all_train_losses))
+        valid_epoch_idx = range(len(all_valid_losses))
+        # sns.lineplot(epoch_idx, all_losses)
+        sns.lineplot(train_epoch_idx, all_train_running_losses)
+        sns.lineplot(valid_epoch_idx, all_valid_running_losses)
+        # plt.show()
+
+    def run_prediction(self, train_loader, test_loader, n_epochs=10):
+        self._print_summary()
+
+        train_losses = []
+        train_running_losses = []
+
+        valid_losses = []
+        valid_running_losses = []
+
+        predictions = []
+
+        for i in range(n_epochs):
+            loss_history, running_loss_history = self.train(train_loader)
+
+            train_losses.append(loss_history)
+            train_running_losses.append(running_loss_history)
+
+        return self.predict(test_loader)
+
+
+def init_weights(m):
+    for name, param in m.named_parameters():
+        nn.init.normal_(param.data, -0.08, 0.08)
+
+
+def count_parameters(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
