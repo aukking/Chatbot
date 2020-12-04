@@ -227,7 +227,7 @@ class Trainer(object):
         # The history information can allow us to draw a loss plot
         return loss_history, running_loss_history
 
-    def evaluate(self, loader, labels):
+    def evaluate(self, loader):
         """
         Evaluate the model on a validation set
         """
@@ -289,39 +289,21 @@ class Trainer(object):
 
         return loss_history, running_loss_history
 
-    def predict(self, loader):
+    def predict(self, sentence):
         """
         Evaluate the model on a validation set
         """
 
-        self.model.eval()  # Run model in eval mode (disables dropout layer)
-
-        batch_wise_predictions = []
+        self.model.eval()
 
         with torch.no_grad():  # Disable gradient computation - required only during training
-            for i, batch in tqdm(enumerate(loader)):
-                X = batch.message.to(self.device)
-                # print(f'Predict X_shape: {X.shape}')
 
-                logits = self.model(X)  # Run forward pass (except we don't store gradients)
-                # logits shape: (batch_size, num_classes)
+            X = sentence.to(self.device)
+            # print(f'Predict X_shape: {X.shape}')
 
-                # logits : [batch_size, num_classes] and each of the values in logits can be anything (-infinity, +infity)
-                # Converts the raw outputs into probabilities for each class using softmax
-                # probs = F.softmax(logits, dim=-1)
-                # probs = torch.sigmoid(logits)
-                # probs shape: (batch_size, num_classes)
-                # -1 dimension picks the last dimension in the shape of the tensor, in this case 'num_classes'
+            logits = self.model(X, X, teacher_forcing_ratio=0)  # Run forward pass (except we don't store gradients)
 
-                # softmax vector: [[0.1, 0.2, 0.6, 0.1, 0.0], [0.9, 0.01, 0.01, 0.01, 0.07]]
-                # output tensor: [2, 0]
-                # predictions = torch.argmax(probs, dim=-1) # Output predictions; Argmax picks the index with the highest probability among all the classes (choosing our most probable class)
-                # predictions = torch.where(probs > self.threshold, 1, 0)
-                # predictions shape: (batch_size)
-
-                batch_wise_predictions.append(logits)
-
-        return batch_wise_predictions
+        return logits
 
     def predict_raw(self, message):
         """
@@ -360,7 +342,7 @@ class Trainer(object):
     def get_model_dict(self):
         return self.model.state_dict()
 
-    def run_training(self, train_loader, valid_loader, labels, n_epochs=10):
+    def run_training(self, train_loader, valid_loader, n_epochs=10):
         # Useful for us to review what experiment we're running
         # Normally, you'd want to save this to a file
         self._print_summary()
@@ -373,7 +355,7 @@ class Trainer(object):
 
         for i in range(n_epochs):
             loss_history, running_loss_history = self.train(train_loader)
-            valid_loss_history, valid_running_loss_history = self.evaluate(valid_loader, labels)
+            valid_loss_history, valid_running_loss_history = self.evaluate(valid_loader)
 
             train_losses.append(loss_history)
             train_running_losses.append(running_loss_history)
@@ -422,3 +404,29 @@ def init_weights(m):
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def vectorize_input(sent, field):
+    nlp = spacy.load('en_core_web_sm')
+    tokens = [token.text for token in nlp(sent)]
+
+    numericalized_tokens = [field.vocab.stoi[t] for t in tokens]
+    unk_idx = field.vocab.stoi[field.unk_token]
+    unks = [t for t, n in zip(tokens, numericalized_tokens) if n == unk_idx]
+
+    token_tensor = torch.LongTensor(numericalized_tokens)
+    token_tensor = token_tensor.unsqueeze(-1)
+
+    return token_tensor, unks
+
+def decode_prediction(pred, field):
+    predicted_sent = []
+    max_preds = pred.argmax(-1)
+    for i, preds in enumerate(max_preds):
+        predicted_sent.append([field.vocab.itos[t.item()] for t in preds])
+
+    predicted_sent = np.array(predicted_sent).T.tolist()
+
+    return predicted_sent
+
+
+

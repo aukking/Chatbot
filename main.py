@@ -71,44 +71,59 @@ HIDDEN_DIM = 50
 N_LAYERS = 2
 ENC_DROPOUT = 0.25
 DEC_DROPOUT = 0.25
-REPLY_PAD_IDX = REPLY.vocab.stoi[REPLY.pad_token]
+PAD_IDX = REPLY.vocab.stoi[REPLY.pad_token]
 
-# variabel used to toggle if we want to train or run the model
+# variable used to toggle if we want to train or run the model
 TRAIN = False
 
 enc = Encoder(INPUT_DIM, ENC_EMBEDDING_DIM, HIDDEN_DIM, N_LAYERS, ENC_DROPOUT)
 dec = Decoder(OUTPUT_DIM, DEC_EMBEDDING_DIM, HIDDEN_DIM, N_LAYERS, DEC_DROPOUT)
 
+# # Initialize model embedding layer
+pretrained_embeddings = MESSAGE.vocab.vectors
+enc.embedding.weight.data.copy_(pretrained_embeddings)
+enc.embedding.weight.data[PAD_IDX] = torch.zeros(50)
+
+pretrained_embeddings = REPLY.vocab.vectors
+dec.embedding.weight.data.copy_(pretrained_embeddings)
+dec.embedding.weight.data[PAD_IDX] = torch.zeros(50)
+
 model = Seq2Seq(enc, dec, device).to(device)
+model.apply(init_weights)
+
 print(f'The model has {count_parameters(model):,} trainable parameters')
 
-MESSAGE_PAD_IDX = REPLY.vocab.stoi[REPLY.pad_token]
-criterion = nn.CrossEntropyLoss(ignore_index=MESSAGE_PAD_IDX)
+criterion = nn.CrossEntropyLoss(ignore_index=PAD_IDX)
 optimizer = optim.Adam(model.parameters())
 
 if TRAIN:
     model.apply(init_weights)
-    # pretrained_embeddings = MESSAGE.vocab.vectors
+
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
-    lstm_trainer.run_training(train_iterator, valid_iterator, REPLY.vocab.stoi, n_epochs=10)
+    lstm_trainer.run_training(train_iterator, valid_iterator, n_epochs=10)
 
-    torch.save(model.state_dict(), 'first_mode.pt')
+    torch.save(model.state_dict(), 'second_mode.pt')
+
 else:
-    model.load_state_dict(torch.load('first_mode.pt'))
+    model.load_state_dict(torch.load('second_mode.pt'))
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
     # first step to predict is to vectorize a message
-    message = 'hello world'
-    message_embeddings = MESSAGE.vocab.vectors
-    str2idx = MESSAGE.vocab.stoi
-    vectorized_input = []
-    for word in message.split():
-        vectorized_input.append(message_embeddings[str2idx[word]].unsqueeze(0))
+    message = 'Hi, who is your favorite football team?'
+    # message_embeddings = MESSAGE.vocab.vectors
+    # str2idx = MESSAGE.vocab.stoi
+    # vectorized_input = []
+    # for word in message.split():
+    #     vectorized_input.append(message_embeddings[str2idx[word]].unsqueeze(0))
+    #
+    # tensor_input = torch.cat(vectorized_input).unsqueeze(0)
 
-    tensor_input = torch.cat(vectorized_input).unsqueeze(0)
-    prediction = lstm_trainer.predict_raw(tensor_input)
-    print(prediction)
+    tensor_input, unks = vectorize_input(message, MESSAGE)
+
+    prediction = lstm_trainer.predict(tensor_input)
+
+    print(decode_prediction(prediction, REPLY))
 
 
 
