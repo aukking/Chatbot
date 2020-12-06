@@ -111,13 +111,14 @@ else:
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
     # first step to predict is to vectorize a message
-    message = 'what are you'
+    while True:
+        message = input('type message')
 
-    tensor_input, unks = vectorize_input(message, MESSAGE)
+        tensor_input, unks = vectorize_input(message, MESSAGE)
 
-    prediction = lstm_trainer.predict(tensor_input)
+        prediction = lstm_trainer.predict(tensor_input)
 
-    print(decode_prediction(prediction, REPLY))
+        print(decode_prediction(prediction, REPLY))
 
 
 
