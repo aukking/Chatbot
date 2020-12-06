@@ -54,7 +54,7 @@ REPLY.build_vocab(
 # REPLY.build_vocab(train_data, min_freq=2)
 
 # max batch size allowable on Austin's machine: 128
-BATCH_SIZE = 128
+BATCH_SIZE = 32
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -102,16 +102,16 @@ if TRAIN:
 
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
-    lstm_trainer.run_training(train_iterator, valid_iterator, n_epochs=10)
+    lstm_trainer.run_training(train_iterator, valid_iterator, n_epochs=100)
 
-    torch.save(model.state_dict(), 'third_model.pt')
+    torch.save(model.state_dict(), 'first_big_model.pt')
 
 else:
-    model.load_state_dict(torch.load('third_model.pt'))
+    model.load_state_dict(torch.load('first_big_model.pt'))
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
     # first step to predict is to vectorize a message
-    message = 'Are you a fan of Google or Microsoft?'
+    message = 'what are you'
 
     tensor_input, unks = vectorize_input(message, MESSAGE)
 
