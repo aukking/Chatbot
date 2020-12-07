@@ -447,8 +447,19 @@ def decode_prediction(pred, field):
         predicted_sent.append([field.vocab.itos[t.item()] for t in preds])
 
     predicted_sent = np.array(predicted_sent).T.tolist()
+    predicted_sent = predicted_sent[0]
 
-    return predicted_sent
+    string = ''
+    word = predicted_sent[0]
+    count = 1
+    while word != '<eos>' and count < len(predicted_sent):
+        string += word + ' '
+        word = predicted_sent[count]
+        count += 1
+
+    string = string[:-1]
+
+    return string
 
 
 

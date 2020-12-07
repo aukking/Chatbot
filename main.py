@@ -49,12 +49,11 @@ REPLY.build_vocab(
     unk_init=torch.Tensor.normal_
 )
 
-# Q: Why are we building the vocab twice?
-# MESSAGE.build_vocab(train_data, min_freq=2)
-# REPLY.build_vocab(train_data, min_freq=2)
-
 # max batch size allowable on Austin's machine: 128
-BATCH_SIZE = 16
+# important, need to note what batch size each model runs on
+# second_big_model.pt runs on 16
+# first_big_model.pt runs on ???
+BATCH_SIZE = 64
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -90,7 +89,9 @@ dec.embedding.weight.data.copy_(pretrained_embeddings)
 dec.embedding.weight.data[PAD_IDX] = torch.zeros(50)
 
 model = Seq2Seq(enc, dec, device).to(device)
-model.apply(init_weights)
+
+# why do we do this twice in the thing?
+# model.apply(init_weights)
 
 print(f'The model has {count_parameters(model):,} trainable parameters')
 
@@ -107,12 +108,12 @@ if TRAIN:
     torch.save(model.state_dict(), 'second_big_model.pt')
 
 else:
-    model.load_state_dict(torch.load('second_big_model.pt'))
+    model.load_state_dict(torch.load('first_big_model.pt'))
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
     # first step to predict is to vectorize a message
     while True:
-        message = input('type message')
+        message = input('')
 
         tensor_input, unks = vectorize_input(message, MESSAGE)
 
