@@ -9,6 +9,7 @@ Original file is located at
 from models import *
 import numpy as np
 import random
+from sklearn.metrics import classification_report
 
 SEED = 1234
 
@@ -59,8 +60,9 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 train_iterator, valid_iterator = data.BucketIterator.splits(
     (train_data, valid_data),
-    batch_size=BATCH_SIZE,
-    sort=False,
+    batch_size=(BATCH_SIZE, 1),
+    sort_key=lambda x: len(x.message),
+    sort_within_batch=False,
     device=device)
 
 INPUT_DIM = len(MESSAGE.vocab)
@@ -110,6 +112,16 @@ if TRAIN:
 else:
     model.load_state_dict(torch.load('first_big_model.pt'))
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
+
+    predictions = []
+    ground_truths = []
+    for item in valid_iterator:
+        print(item)
+        pred = lstm_trainer.predict(item.message)
+        predictions.append(pred)
+        ground_truths.append(item.reply)
+    print(classification_report(ground_truths, predictions))
+
 
     # first step to predict is to vectorize a message
     while True:
