@@ -252,7 +252,7 @@ class Seq2SeqBeam(nn.Module):
 
             path = []
             complete_paths = []
-            state = (self.sos, 0, path)
+            state = (self.sos, hidden, cell, 0, path)
             frontier = [state]
 
             beam_width = self.beam_size
@@ -261,7 +261,7 @@ class Seq2SeqBeam(nn.Module):
             while beam_width > 0 and counter < self.max_seq_length:
                 extended_frontier = []
                 for state in frontier:
-                    input, running_prob, path = state
+                    input, hidden, cell, running_prob, path = state
                     input = torch.tensor([input]).to(self.device)
                     y, hidden, cell = self.decoder(input, hidden, cell)
                     new_probs = softy(y).squeeze(0)
@@ -269,31 +269,36 @@ class Seq2SeqBeam(nn.Module):
                     worst_idx = -1
                     for i, prob in enumerate(new_probs):
                         new_path = path + [i]
+                        if prob == 0:
+                            continue
                         new_prob = running_prob + math.log2(prob)
-                        successor = (i, new_prob, new_path)
+                        successor = (i, hidden, cell, new_prob, new_path)
                         # function ADDTOBEAM
 
                         if len(extended_frontier) < beam_width:
                             extended_frontier.append(successor)
                             # once the extended frontier is full, need to establish the worst position
                             if len(extended_frontier) == beam_width:
-                                for state in extended_frontier:
-                                    idx, p, p_path = state
+                                for i, state in enumerate(extended_frontier):
+                                    idx, h, c, p, p_path = state
                                     if p < worst_prob:
                                         worst_prob = p
-                                        worst_idx = idx
+                                        worst_idx = i
                         elif new_prob > worst_prob:
                             extended_frontier[worst_idx] = successor
-                            for state in extended_frontier:
-                                idx, p, p_path = state
+
+                            # once we replace the worst state, need to re establish what the new worst state is
+                            worst_prob = new_prob
+                            for i, state in enumerate(extended_frontier):
+                                idx, h, c, p, p_path = state
                                 if p < worst_prob:
                                     worst_prob = p
-                                    worst_idx = idx
+                                    worst_idx = i
 
                 copy_idxs = []
                 for i, state in enumerate(extended_frontier):
                     # check to see if state is complete, which means ends at eos token
-                    idx, prob, path = state
+                    idx, h, c, prob, path = state
                     if idx == self.eos:
                         complete_paths.append((path, prob))
                         beam_width -= 1
@@ -308,8 +313,8 @@ class Seq2SeqBeam(nn.Module):
             # we now have the complete paths variable that contains tuples of (path, prob)
             # we are going to pick the max prob path and return that
             if len(complete_paths) == 0:
-                probs = np.asarray([p for i, p, pa in frontier])
-                paths = [pa for i, p, pa in frontier]
+                probs = np.asarray([p for i, h, c, p, pa in frontier])
+                paths = [pa for i, h, c, p, pa in frontier]
                 idx = probs.argmax()
                 return paths[idx]
             else:
@@ -556,7 +561,6 @@ def decode_prediction_beam(pred, field):
     for i, p in enumerate(pred):
         predicted_sent.append(field.vocab.itos[p])
 
-    print(predicted_sent)
     string = ''
     word = predicted_sent[0]
     count = 1

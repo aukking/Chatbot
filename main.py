@@ -91,7 +91,7 @@ pretrained_embeddings = REPLY.vocab.vectors
 dec.embedding.weight.data.copy_(pretrained_embeddings)
 dec.embedding.weight.data[PAD_IDX] = torch.zeros(50)
 
-model = Seq2SeqBeam(enc, dec, device, sos=SOS, eos=EOS).to(device)
+model = Seq2SeqBeam(enc, dec, device, sos=SOS, eos=EOS, beam_size=3).to(device)
 
 print(f'The model has {count_parameters(model):,} trainable parameters')
 
@@ -119,7 +119,6 @@ else:
 
         # we would like these predictions to be softmaxed
         prediction = lstm_trainer.predict(tensor_input)
-        print(prediction)
         print(decode_prediction_beam(prediction, REPLY))
 
 
