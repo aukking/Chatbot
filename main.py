@@ -55,7 +55,8 @@ REPLY.build_vocab(
 # first_big_model.pt runs on ???
 BATCH_SIZE = 64
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = 'cpu'
 
 train_iterator, valid_iterator = data.BucketIterator.splits(
     (train_data, valid_data),
@@ -90,10 +91,7 @@ pretrained_embeddings = REPLY.vocab.vectors
 dec.embedding.weight.data.copy_(pretrained_embeddings)
 dec.embedding.weight.data[PAD_IDX] = torch.zeros(50)
 
-model = Seq2Seq(enc, dec, device, sos=SOS, eos=EOS).to(device)
-
-# why do we do this twice in the thing?
-# model.apply(init_weights)
+model = Seq2SeqBeam(enc, dec, device, sos=SOS, eos=EOS).to(device)
 
 print(f'The model has {count_parameters(model):,} trainable parameters')
 
@@ -122,7 +120,7 @@ else:
         # we would like these predictions to be softmaxed
         prediction = lstm_trainer.predict(tensor_input)
 
-        print(decode_prediction(prediction, REPLY))
+        print(decode_prediction_beam(prediction, REPLY))
 
 
 

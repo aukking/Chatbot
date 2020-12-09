@@ -189,7 +189,7 @@ class Seq2Seq(nn.Module):
 
 
 class Seq2SeqBeam(nn.Module):
-    def __init__(self, encoder, decoder, device, max_seq_length=20, beam_size=5):
+    def __init__(self, encoder, decoder, device, max_seq_length=20, beam_size=2, sos=-1, eos=-1):
         super().__init__()
 
         self.encoder = encoder
@@ -197,6 +197,8 @@ class Seq2SeqBeam(nn.Module):
         self.device = device
         self.max_seq_length = max_seq_length
         self.beam_size = beam_size
+        self.sos = sos
+        self.eos = eos
 
         assert encoder.hid_dim == decoder.hid_dim, \
             "Hidden dimensions of encoder and decoder must be equal!"
@@ -243,34 +245,35 @@ class Seq2SeqBeam(nn.Module):
                 # if teacher forcing, use actual next token as next input
                 # if not, use predicted token
                 input = trg[t] if teacher_force else top1
+            return outputs
         else:
             # this is beam decode
             # note: hidden, cell are the context vectors to consider as initial input
-            input = src[0, :]
-            eos = src[-1, :]
+            input = torch.tensor([self.sos]).to(self.device)
 
             softy = nn.Softmax(dim=1)
 
             path = []
             complete_paths = []
-            state = (input, 1, path)
+            state = (input, 0, path)
             frontier = [state]
 
             beam_width = self.beam_size
+            counter = 0
 
-            while beam_width > 0:
+            while beam_width > 0 and counter < self.max_seq_length:
                 extended_frontier = []
                 for state in frontier:
                     input, running_prob, path = state
-                    y = self.decoder(input, hidden, cell)
-                    new_probs = softy(y)
+                    input = torch.tensor([input]).to(self.device)
+                    y, hidden, cell = self.decoder(input, hidden, cell)
+                    new_probs = softy(y).squeeze(0)
                     worst_prob = 1
                     worst_idx = -1
                     for i, prob in enumerate(new_probs):
-                        new_path = path.append(i)
-                        new_prob = running_prob * prob
+                        new_path = path + [i]
+                        new_prob = running_prob + math.log2(prob)
                         successor = (i, new_prob, new_path)
-
                         # function ADDTOBEAM
                         if len(extended_frontier) < beam_width:
                             extended_frontier.append(successor)
@@ -289,12 +292,38 @@ class Seq2SeqBeam(nn.Module):
                                     worst_prob = p
                                     worst_idx = idx
 
-                for state in extended_frontier:
-                    None
+                copy_idxs = []
+                for i, state in enumerate(extended_frontier):
+                    # check to see if state is complete, which means ends at eos token
+                    idx, prob, path = state
+                    if idx == self.eos:
+                        complete_paths.append((path, prob))
+                        beam_width -= 1
+                    else:
+                        copy_idxs.append(i)
+                temp_frontier = []
+                for i in copy_idxs:
+                    temp_frontier.append(extended_frontier[i])
+                frontier = temp_frontier
+                counter += 1
 
+            # we now have the complete paths variable that contains tuples of (path, prob)
+            # we are going to pick the max prob path and return that
+            max_prob = -1
+            max_path = None
+            for path, prob in complete_paths:
+                if prob > max_prob:
+                    max_prob = prob
+                    max_path = path
+            if max_path is None:
+                for state in frontier:
+                    i, prob, path = state
+                    if prob > max_prob:
+                        max_prob = prob
+                        max_path = path
+            print(max_path)
 
-
-        return outputs
+            return max_path
 
 
 class Trainer(object):
@@ -516,6 +545,23 @@ def decode_prediction(pred, field):
     max_preds = pred.argmax(-1).squeeze(-1)
     for i, pred in enumerate(max_preds):
         predicted_sent.append(field.vocab.itos[pred.item()])
+
+    string = ''
+    word = predicted_sent[0]
+    count = 1
+    while word != '<eos>' and count < len(predicted_sent):
+        string += word + ' '
+        word = predicted_sent[count]
+        count += 1
+
+    string = string[:-1]
+
+    return string
+
+def decode_prediction_beam(pred, field):
+    predicted_sent = []
+    for i, p in enumerate(pred):
+        predicted_sent.append(field.vocab.itos[p.item()])
 
     string = ''
     word = predicted_sent[0]
