@@ -106,13 +106,15 @@ class Decoder(nn.Module):
 
 
 class Seq2Seq(nn.Module):
-    def __init__(self, encoder, decoder, device, max_seq_length=20):
+    def __init__(self, encoder, decoder, device, max_seq_length=20, sos=-1, eos=-1):
         super().__init__()
 
         self.encoder = encoder
         self.decoder = decoder
         self.device = device
         self.max_seq_length = max_seq_length
+        self.sos = sos
+        self.eos = eos
 
         assert encoder.hid_dim == decoder.hid_dim, \
             "Hidden dimensions of encoder and decoder must be equal!"
@@ -128,12 +130,97 @@ class Seq2Seq(nn.Module):
         batch_size = src.shape[1]
         trg_vocab_size = self.decoder.output_dim
         # last hidden state of the encoder is used as the initial hidden state of the decoder
+        # this is considered as the context vector
         hidden, cell = self.encoder(src)
 
+        # if we are still training the model
         if teacher_forcing_ratio != 0:
             trg_len = trg.shape[0]
 
             # tensor to store decoder outputs
+            # because we are still training the model, we get the length from the ground truth
+            outputs = torch.zeros(trg_len, batch_size, trg_vocab_size).to(self.device)
+
+            # first input to the decoder is the <sos> tokens
+            # input = trg[0, :]
+            input = torch.tensor([self.sos]).to(self.device)
+
+            for t in range(1, trg_len):
+                # insert input token embedding, previous hidden and previous cell states
+                # receive output tensor (predictions) and new hidden and cell states
+                output, hidden, cell = self.decoder(input, hidden, cell)
+
+                # place predictions in a tensor holding predictions for each token
+                outputs[t] = output
+
+                # decide if we are going to use teacher forcing or not
+                teacher_force = random.random() < teacher_forcing_ratio
+
+                # get the highest predicted token from our predictions
+                top1 = output.argmax(1)
+
+                # if teacher forcing, use actual next token as next input
+                # if not, use predicted token
+                input = trg[t] if teacher_force else top1
+        else:
+            outputs = torch.zeros(self.max_seq_length, batch_size, trg_vocab_size).to(self.device)
+            # first input to the decoder is the <sos> tokens
+            input = torch.tensor([self.sos]).to(self.device)
+            counter = 0
+            # note this while loop does not properly recognize eos token
+            while input.item() != self.eos and counter < self.max_seq_length:
+                # insert input token, previous hidden and previous cell states
+                # receive output tensor (predictions) and new hidden and cell states
+                output, hidden, cell = self.decoder(input, hidden, cell)
+
+                softy = nn.Softmax(dim=1)
+                output_probs = softy(output)
+
+                # place predictions in a tensor holding predictions for each token
+                outputs[counter] = output_probs
+                # get the highest predicted token from our predictions
+                top1 = output_probs.argmax(1)
+                # if teacher forcing, use actual next token as next input
+                # if not, use predicted token
+                input = top1
+                counter += 1
+
+        return outputs
+
+
+class Seq2SeqBeam(nn.Module):
+    def __init__(self, encoder, decoder, device, max_seq_length=20, beam_size=5):
+        super().__init__()
+
+        self.encoder = encoder
+        self.decoder = decoder
+        self.device = device
+        self.max_seq_length = max_seq_length
+        self.beam_size = beam_size
+
+        assert encoder.hid_dim == decoder.hid_dim, \
+            "Hidden dimensions of encoder and decoder must be equal!"
+        assert encoder.n_layers == decoder.n_layers, \
+            "Encoder and decoder must have equal number of layers!"
+
+    def forward(self, src, trg, teacher_forcing_ratio=0.5):
+        # src = [src len, batch size]
+        # trg = [trg len, batch size]
+        # teacher_forcing_ratio is probability to use teacher forcing
+        # e.g. if teacher_forcing_ratio is 0.75 we use ground-truth inputs 75% of the time
+
+        batch_size = src.shape[1]
+        trg_vocab_size = self.decoder.output_dim
+        # last hidden state of the encoder is used as the initial hidden state of the decoder
+        # this is considered as the context vector
+        hidden, cell = self.encoder(src)
+
+        # if we are still training the model
+        if teacher_forcing_ratio != 0:
+            trg_len = trg.shape[0]
+
+            # tensor to store decoder outputs
+            # because we are still training the model, we get the length from the ground truth
             outputs = torch.zeros(trg_len, batch_size, trg_vocab_size).to(self.device)
 
             # first input to the decoder is the <sos> tokens
@@ -157,23 +244,55 @@ class Seq2Seq(nn.Module):
                 # if not, use predicted token
                 input = trg[t] if teacher_force else top1
         else:
-            outputs = torch.zeros(self.max_seq_length, batch_size, trg_vocab_size).to(self.device)
-            # first input to the decoder is the <sos> tokens
+            # this is beam decode
+            # note: hidden, cell are the context vectors to consider as initial input
             input = src[0, :]
             eos = src[-1, :]
-            counter = 0
-            while not torch.all(torch.eq(input, eos)) and counter < self.max_seq_length:
-                # insert input token embedding, previous hidden and previous cell states
-                # receive output tensor (predictions) and new hidden and cell states
-                output, hidden, cell = self.decoder(input, hidden, cell)
-                # place predictions in a tensor holding predictions for each token
-                outputs[counter] = output
-                # get the highest predicted token from our predictions
-                top1 = output.argmax(1)
-                # if teacher forcing, use actual next token as next input
-                # if not, use predicted token
-                input = top1
-                counter += 1
+
+            softy = nn.Softmax(dim=1)
+
+            path = []
+            complete_paths = []
+            state = (input, 1, path)
+            frontier = [state]
+
+            beam_width = self.beam_size
+
+            while beam_width > 0:
+                extended_frontier = []
+                for state in frontier:
+                    input, running_prob, path = state
+                    y = self.decoder(input, hidden, cell)
+                    new_probs = softy(y)
+                    worst_prob = 1
+                    worst_idx = -1
+                    for i, prob in enumerate(new_probs):
+                        new_path = path.append(i)
+                        new_prob = running_prob * prob
+                        successor = (i, new_prob, new_path)
+
+                        # function ADDTOBEAM
+                        if len(extended_frontier) < beam_width:
+                            extended_frontier.append(successor)
+                            # once the extended frontier is full, need to establish the worst position
+                            if len(extended_frontier) == beam_width:
+                                for state in extended_frontier:
+                                    idx, p, p_path = state
+                                    if p < worst_prob:
+                                        worst_prob = p
+                                        worst_idx = idx
+                        elif new_prob > worst_prob:
+                            extended_frontier[worst_idx] = successor
+                            for state in extended_frontier:
+                                idx, p, p_path = state
+                                if p < worst_prob:
+                                    worst_prob = p
+                                    worst_idx = idx
+
+                for state in extended_frontier:
+                    None
+
+
 
         return outputs
 
@@ -256,11 +375,6 @@ class Trainer(object):
 
         self.model.eval()  # Run model in eval mode (disables dropout layer)
 
-        # batch_wise_text = []
-        # batch_wise_true_labels = []
-        # batch_wise_predictions = []
-        # batch_wise_acc = 0
-
         loss_history = []
         running_loss = 0.
         running_loss_history = []
@@ -290,38 +404,13 @@ class Trainer(object):
 
                 running_loss_history.append(running_loss)
 
-                # logits : [batch_size, num_classes] and each of the values in logits can be anything (-infinity, +infity)
-                # Converts the raw outputs into probabilities for each class using softmax
-                # probs = F.softmax(logits, dim=-1)
-                # probs = torch.sigmoid(logits)
-                # probs shape: (batch_size, num_classes)
-                # -1 dimension picks the last dimension in the shape of the tensor, in this case 'num_classes'
-
-                # softmax vector: [[0.1, 0.2, 0.6, 0.1, 0.0], [0.9, 0.01, 0.01, 0.01, 0.07]]
-                # output tensor: [2, 0]
-                # predictions = torch.argmax(probs, dim=-1) # Output predictions; Argmax picks the index with the highest probability among all the classes (choosing our most probable class)
-                # predictions = torch.where(probs > self.threshold, 1, 0)
-                # predictions shape: (batch_size)
-
-                # acc = categorical_accuracy(logits, y, self.tag_pad_idx).item()
-
-                # batch_wise_acc += acc
-
-        # print(f'Epoch Acc: {batch_wise_acc / len(loader)}')
-
         return loss_history, running_loss_history
 
     def predict(self, sentence):
-        """
-        Evaluate the model on a validation set
-        """
-
         self.model.eval()
 
         with torch.no_grad():  # Disable gradient computation - required only during training
-
             X = sentence.to(self.device)
-            # print(f'Predict X_shape: {X.shape}')
 
             logits = self.model(X, X, teacher_forcing_ratio=0)  # Run forward pass (except we don't store gradients)
 
@@ -343,19 +432,6 @@ class Trainer(object):
 
                 logits = self.model(X, X, teacher_forcing_ratio=0)  # Run forward pass (except we don't store gradients)
                 # logits shape: (batch_size, num_classes)
-
-                # logits : [batch_size, num_classes] and each of the values in logits can be anything (-infinity, +infity)
-                # Converts the raw outputs into probabilities for each class using softmax
-                # probs = F.softmax(logits, dim=-1)
-                # probs = torch.sigmoid(logits)
-                # probs shape: (batch_size, num_classes)
-                # -1 dimension picks the last dimension in the shape of the tensor, in this case 'num_classes'
-
-                # softmax vector: [[0.1, 0.2, 0.6, 0.1, 0.0], [0.9, 0.01, 0.01, 0.01, 0.07]]
-                # output tensor: [2, 0]
-                # predictions = torch.argmax(probs, dim=-1) # Output predictions; Argmax picks the index with the highest probability among all the classes (choosing our most probable class)
-                # predictions = torch.where(probs > self.threshold, 1, 0)
-                # predictions shape: (batch_size)
 
                 batch_wise_predictions.append(logits)
 
@@ -405,11 +481,6 @@ class Trainer(object):
         train_losses = []
         train_running_losses = []
 
-        valid_losses = []
-        valid_running_losses = []
-
-        predictions = []
-
         for i in range(n_epochs):
             loss_history, running_loss_history = self.train(train_loader)
 
@@ -442,12 +513,9 @@ def vectorize_input(sent, field):
 
 def decode_prediction(pred, field):
     predicted_sent = []
-    max_preds = pred.argmax(-1)
-    for i, preds in enumerate(max_preds):
-        predicted_sent.append([field.vocab.itos[t.item()] for t in preds])
-
-    predicted_sent = np.array(predicted_sent).T.tolist()
-    predicted_sent = predicted_sent[0]
+    max_preds = pred.argmax(-1).squeeze(-1)
+    for i, pred in enumerate(max_preds):
+        predicted_sent.append(field.vocab.itos[pred.item()])
 
     string = ''
     word = predicted_sent[0]

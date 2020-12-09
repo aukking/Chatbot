@@ -72,6 +72,8 @@ N_LAYERS = 2
 ENC_DROPOUT = 0.25
 DEC_DROPOUT = 0.25
 PAD_IDX = REPLY.vocab.stoi[REPLY.pad_token]
+SOS = REPLY.vocab.stoi['<sos>']
+EOS = REPLY.vocab.stoi['<eos>']
 
 # variable used to toggle if we want to train or run the model
 TRAIN = False
@@ -88,7 +90,7 @@ pretrained_embeddings = REPLY.vocab.vectors
 dec.embedding.weight.data.copy_(pretrained_embeddings)
 dec.embedding.weight.data[PAD_IDX] = torch.zeros(50)
 
-model = Seq2Seq(enc, dec, device).to(device)
+model = Seq2Seq(enc, dec, device, sos=SOS, eos=EOS).to(device)
 
 # why do we do this twice in the thing?
 # model.apply(init_weights)
@@ -117,6 +119,7 @@ else:
 
         tensor_input, unks = vectorize_input(message, MESSAGE)
 
+        # we would like these predictions to be softmaxed
         prediction = lstm_trainer.predict(tensor_input)
 
         print(decode_prediction(prediction, REPLY))
