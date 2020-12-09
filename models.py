@@ -307,22 +307,16 @@ class Seq2SeqBeam(nn.Module):
 
             # we now have the complete paths variable that contains tuples of (path, prob)
             # we are going to pick the max prob path and return that
-            i, prob, path = frontier[0]
-            max_path = path
-            max_prob = prob
-
-            for path, prob in complete_paths:
-                if prob > max_prob:
-                    max_prob = prob
-                    max_path = path
             if len(complete_paths) == 0:
-                for state in frontier:
-                    i, prob, path = state
-                    if prob > max_prob:
-                        max_prob = prob
-                        max_path = path
-
-            return max_path
+                probs = np.asarray([p for i, p, pa in frontier])
+                paths = [pa for i, p, pa in frontier]
+                idx = probs.argmax()
+                return paths[idx]
+            else:
+                probs = np.asarray([p for pa, p in complete_paths])
+                paths = [pa for pa, p in complete_paths]
+                idx = probs.argmax()
+                return paths[idx]
 
 
 class Trainer(object):
