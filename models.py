@@ -210,7 +210,6 @@ class Seq2SeqBeam(nn.Module):
         # trg = [trg len, batch size]
         # teacher_forcing_ratio is probability to use teacher forcing
         # e.g. if teacher_forcing_ratio is 0.75 we use ground-truth inputs 75% of the time
-
         batch_size = src.shape[1]
         trg_vocab_size = self.decoder.output_dim
         # last hidden state of the encoder is used as the initial hidden state of the decoder
@@ -249,13 +248,11 @@ class Seq2SeqBeam(nn.Module):
         else:
             # this is beam decode
             # note: hidden, cell are the context vectors to consider as initial input
-            input = torch.tensor([self.sos]).to(self.device)
-
             softy = nn.Softmax(dim=1)
 
             path = []
             complete_paths = []
-            state = (input, 0, path)
+            state = (self.sos, 0, path)
             frontier = [state]
 
             beam_width = self.beam_size
@@ -275,6 +272,7 @@ class Seq2SeqBeam(nn.Module):
                         new_prob = running_prob + math.log2(prob)
                         successor = (i, new_prob, new_path)
                         # function ADDTOBEAM
+
                         if len(extended_frontier) < beam_width:
                             extended_frontier.append(successor)
                             # once the extended frontier is full, need to establish the worst position
@@ -309,19 +307,20 @@ class Seq2SeqBeam(nn.Module):
 
             # we now have the complete paths variable that contains tuples of (path, prob)
             # we are going to pick the max prob path and return that
-            max_prob = -1
-            max_path = None
+            i, prob, path = frontier[0]
+            max_path = path
+            max_prob = prob
+
             for path, prob in complete_paths:
                 if prob > max_prob:
                     max_prob = prob
                     max_path = path
-            if max_path is None:
+            if len(complete_paths) == 0:
                 for state in frontier:
                     i, prob, path = state
                     if prob > max_prob:
                         max_prob = prob
                         max_path = path
-            print(max_path)
 
             return max_path
 
@@ -561,8 +560,9 @@ def decode_prediction(pred, field):
 def decode_prediction_beam(pred, field):
     predicted_sent = []
     for i, p in enumerate(pred):
-        predicted_sent.append(field.vocab.itos[p.item()])
+        predicted_sent.append(field.vocab.itos[p])
 
+    print(predicted_sent)
     string = ''
     word = predicted_sent[0]
     count = 1

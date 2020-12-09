@@ -119,7 +119,7 @@ else:
 
         # we would like these predictions to be softmaxed
         prediction = lstm_trainer.predict(tensor_input)
-
+        print(prediction)
         print(decode_prediction_beam(prediction, REPLY))
 
 
