@@ -61,7 +61,8 @@ device = 'cpu'
 train_iterator, valid_iterator = data.BucketIterator.splits(
     (train_data, valid_data),
     batch_size=BATCH_SIZE,
-    sort=False,
+    sort_key=lambda x: len(x.message),
+    sort=True,
     device=device)
 
 INPUT_DIM = len(MESSAGE.vocab)
@@ -77,10 +78,11 @@ SOS = REPLY.vocab.stoi['<sos>']
 EOS = REPLY.vocab.stoi['<eos>']
 
 # variable used to toggle if we want to train or run the model
-TRAIN = False
+TRAIN = True
 
+attn = Attention(HIDDEN_DIM)
 enc = Encoder(INPUT_DIM, ENC_EMBEDDING_DIM, HIDDEN_DIM, N_LAYERS, ENC_DROPOUT)
-dec = Decoder(OUTPUT_DIM, DEC_EMBEDDING_DIM, HIDDEN_DIM, N_LAYERS, DEC_DROPOUT)
+dec = Decoder(OUTPUT_DIM, DEC_EMBEDDING_DIM, HIDDEN_DIM, N_LAYERS, DEC_DROPOUT, attn)
 
 # # Initialize model embedding layer
 pretrained_embeddings = MESSAGE.vocab.vectors
@@ -91,7 +93,7 @@ pretrained_embeddings = REPLY.vocab.vectors
 dec.embedding.weight.data.copy_(pretrained_embeddings)
 dec.embedding.weight.data[PAD_IDX] = torch.zeros(50)
 
-model = Seq2SeqBeam(enc, dec, device, sos=SOS, eos=EOS, beam_size=3).to(device)
+model = Seq2SeqBeam(enc, dec, device, sos=SOS, eos=EOS).to(device)
 
 print(f'The model has {count_parameters(model):,} trainable parameters')
 
@@ -105,10 +107,10 @@ if TRAIN:
 
     lstm_trainer.run_training(train_iterator, valid_iterator, n_epochs=10)
 
-    torch.save(model.state_dict(), 'second_big_model.pt')
+    torch.save(model.state_dict(), 'attn_small_model.pt')
 
 else:
-    model.load_state_dict(torch.load('first_big_model.pt'))
+    model.load_state_dict(torch.load('attn_small_model.pt'))
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
     # first step to predict is to vectorize a message

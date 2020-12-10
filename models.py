@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 
 from torchtext import data
@@ -21,6 +22,7 @@ import random
 from itertools import chain
 from tqdm.auto import tqdm
 
+
 class Encoder(nn.Module):
     def __init__(self, input_dim, emb_dim, hid_dim, n_layers, dropout, bidirectional=True):
         super().__init__()
@@ -31,7 +33,13 @@ class Encoder(nn.Module):
 
         self.embedding = nn.Embedding(input_dim, emb_dim)
 
-        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, bidirectional=bidirectional, dropout=dropout)
+        # self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, bidirectional=bidirectional, dropout=dropout)
+
+        # Switching to a GRU, mainly because it is what the example in the text book uses
+        # and the outputs for LSTMs and GRUs are different
+        self.rnn = nn.GRU(emb_dim, hid_dim, n_layers, bidirectional=bidirectional, dropout=dropout)
+
+        self.fc = nn.Linear(hid_dim * 2, hid_dim)
 
         self.dropout = nn.Dropout(dropout)
 
@@ -39,22 +47,48 @@ class Encoder(nn.Module):
         # src = [src len, batch size]
 
         embedded = self.dropout(self.embedding(src))
-
         # embedded = [src len, batch size, emb dim]
 
-        outputs, (hidden, cell) = self.rnn(embedded)
-
-        # outputs = [src len, batch size, hid dim * n directions]
+        outputs, hidden = self.rnn(embedded)
+        # outputs = [src len, batch size, hid dim * n directions (2)]
         # hidden = [n layers * n directions, batch size, hid dim]
         # cell = [n layers * n directions, batch size, hid dim]
 
-        # outputs are always from the top hidden layer
+        hidden = torch.tanh(self.fc(torch.cat(
+            (hidden[-2, :, :], hidden[-1, :, :]), dim=1)))
 
-        return hidden, cell
+        return outputs, hidden
+
+class Attention(nn.Module):
+    def __init__(self, hid_dim):
+        super().__init__()
+
+        self.attn = nn.Linear(hid_dim * 3, hid_dim)
+        self.v = nn.Linear(hid_dim, 1, bias=False)
+
+    def forward(self, hidden, enc_outputs):
+        # hidden = [batch size, hid dim]
+        # enc_outputs = [src len, batch size, hid dim * 2]
+
+        src_len = enc_outputs.shape[0]
+
+        hidden = hidden.unsqueeze(1).repeat(1, src_len, 1)
+        # hidden = [batch size, src len, hid dim]
+
+        enc_outputs = enc_outputs.permute(1, 0, 2)
+        # enc_outputs = [batch size, src len, hid dim * 2]
+
+        energy = torch.tanh(self.attn(torch.cat((hidden, enc_outputs), dim=2)))
+        # energy = [batch size, src len, hid dim]
+
+        attention = self.v(energy).squeeze(2)
+        # attention = [batch size, src len]
+
+        return F.softmax(attention, dim=1)
 
 
 class Decoder(nn.Module):
-    def __init__(self, output_dim, emb_dim, hid_dim, n_layers, dropout, bidirectional=True):
+    def __init__(self, output_dim, emb_dim, hid_dim, n_layers, dropout, attention, bidirectional=True):
         super().__init__()
 
         self.output_dim = output_dim
@@ -62,47 +96,63 @@ class Decoder(nn.Module):
         self.n_layers = n_layers
         self.bidirectional = bidirectional
 
+        self.attention = attention
+
         self.embedding = nn.Embedding(output_dim, emb_dim)
 
-        self.rnn = nn.LSTM(emb_dim, hid_dim, n_layers, bidirectional=bidirectional, dropout=dropout)
+        # self.rnn = nn.LSTM((hid_dim * 2) + emb_dim, hid_dim, num_layers=n_layers, bidirectional=bidirectional, dropout=dropout)
 
-        self.fc_out = nn.Linear(hid_dim * 2 if bidirectional else hid_dim, output_dim)
+        self.rnn = nn.GRU((hid_dim * 2) + emb_dim, hid_dim)
+
+        self.fc_out = nn.Linear((hid_dim * 3) + emb_dim, output_dim)
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, input, hidden, cell):
+    def forward(self, input, outputs, hidden):
         # input = [batch size]
-        # hidden = [n layers * n directions, batch size, hid dim]
+        # outputs = [src len, batch size, emb dim]
+        # hidden = [batch size, emb dim]
         # cell = [n layers * n directions, batch size, hid dim]
 
-        # n directions in the decoder will both always be 1, therefore:
-        # hidden = [n layers, batch size, hid dim]
-        # context = [n layers, batch size, hid dim]
-
         input = input.unsqueeze(0)
-
         # input = [1, batch size]
 
         embedded = self.dropout(self.embedding(input))
-
         # embedded = [1, batch size, emb dim]
 
-        output, (hidden, cell) = self.rnn(embedded, (hidden, cell))
+        a = self.attention(hidden, outputs)
+        # attention = [batch size, src len]
 
-        # output = [seq len, batch size, hid dim * n directions]
-        # hidden = [n layers * n directions, batch size, hid dim]
-        # cell = [n layers * n directions, batch size, hid dim]
+        a = a.unsqueeze(1)
+        # attention = [batch size, 1, src len]
 
-        # seq len and n directions will always be 1 in the decoder, therefore:
-        # output = [1, batch size, hid dim]
-        # hidden = [n layers, batch size, hid dim]
-        # cell = [n layers, batch size, hid dim]
+        enc_outputs = outputs.permute(1, 0, 2)
+        # enc_outputs = [batch size, src len, hid dim * 2]
 
-        prediction = self.fc_out(output.squeeze(0))
+        weighted = torch.bmm(a, enc_outputs)
+        # weighted = [batch size, 1, hid dim * 2]
 
+        weighted = weighted.permute(1, 0, 2)
+        # weighted = [1, batch size, hid dim * 2]
+
+        rnn_input = torch.cat((embedded, weighted), dim=2)
+        # rnn_input = [1, batch size, hid dim * 3]
+
+        output, hidden = self.rnn(rnn_input, hidden.unsqueeze(0))
+        # output = [1, batch size, emb dim]
+        # hidden = [1, batch size, emb dim]
+
+        embedded = embedded.squeeze(0)
+        # embedded = [batch size, emb dim]
+        output = output.squeeze(0)
+        # output = [batch size, emb dim]
+        weighted = weighted.squeeze(0)
+        # weighted = [batch size, emb dim * 2]
+
+        prediction = self.fc_out(torch.cat((output, weighted, embedded), dim=1))
         # prediction = [batch size, output dim]
 
-        return prediction, hidden, cell
+        return prediction, hidden.squeeze(0)
 
 
 class Seq2Seq(nn.Module):
@@ -131,7 +181,7 @@ class Seq2Seq(nn.Module):
         trg_vocab_size = self.decoder.output_dim
         # last hidden state of the encoder is used as the initial hidden state of the decoder
         # this is considered as the context vector
-        hidden, cell = self.encoder(src)
+        enc_outputs, hidden = self.encoder(src)
 
         # if we are still training the model
         if teacher_forcing_ratio != 0:
@@ -142,13 +192,12 @@ class Seq2Seq(nn.Module):
             outputs = torch.zeros(trg_len, batch_size, trg_vocab_size).to(self.device)
 
             # first input to the decoder is the <sos> tokens
-            # input = trg[0, :]
-            input = torch.tensor([self.sos]).to(self.device)
+            input = trg[0, :]
 
             for t in range(1, trg_len):
                 # insert input token embedding, previous hidden and previous cell states
                 # receive output tensor (predictions) and new hidden and cell states
-                output, hidden, cell = self.decoder(input, hidden, cell)
+                output, hidden = self.decoder(input, enc_outputs, hidden)
 
                 # place predictions in a tensor holding predictions for each token
                 outputs[t] = output
@@ -171,7 +220,7 @@ class Seq2Seq(nn.Module):
             while input.item() != self.eos and counter < self.max_seq_length:
                 # insert input token, previous hidden and previous cell states
                 # receive output tensor (predictions) and new hidden and cell states
-                output, hidden, cell = self.decoder(input, hidden, cell)
+                output, hidden = self.decoder(input, enc_outputs, hidden)
 
                 softy = nn.Softmax(dim=1)
                 output_probs = softy(output)
@@ -214,7 +263,7 @@ class Seq2SeqBeam(nn.Module):
         trg_vocab_size = self.decoder.output_dim
         # last hidden state of the encoder is used as the initial hidden state of the decoder
         # this is considered as the context vector
-        hidden, cell = self.encoder(src)
+        enc_outputs, hidden = self.encoder(src)
 
         # if we are still training the model
         if teacher_forcing_ratio != 0:
@@ -226,11 +275,12 @@ class Seq2SeqBeam(nn.Module):
 
             # first input to the decoder is the <sos> tokens
             input = trg[0, :]
+            # input = torch.tensor([self.sos]).to(self.device)
 
             for t in range(1, trg_len):
                 # insert input token embedding, previous hidden and previous cell states
                 # receive output tensor (predictions) and new hidden and cell states
-                output, hidden, cell = self.decoder(input, hidden, cell)
+                output, hidden = self.decoder(input, enc_outputs, hidden)
 
                 # place predictions in a tensor holding predictions for each token
                 outputs[t] = output
@@ -252,7 +302,7 @@ class Seq2SeqBeam(nn.Module):
 
             path = []
             complete_paths = []
-            state = (self.sos, hidden, cell, 0, path)
+            state = (self.sos, hidden, 0, path)
             frontier = [state]
 
             beam_width = self.beam_size
@@ -261,9 +311,9 @@ class Seq2SeqBeam(nn.Module):
             while beam_width > 0 and counter < self.max_seq_length:
                 extended_frontier = []
                 for state in frontier:
-                    input, hidden, cell, running_prob, path = state
+                    input, hidden, running_prob, path = state
                     input = torch.tensor([input]).to(self.device)
-                    y, hidden, cell = self.decoder(input, hidden, cell)
+                    y, hidden = self.decoder(input, enc_outputs, hidden)
                     new_probs = softy(y).squeeze(0)
                     worst_prob = 1
                     worst_idx = -1
@@ -272,7 +322,7 @@ class Seq2SeqBeam(nn.Module):
                         if prob == 0:
                             continue
                         new_prob = running_prob + math.log2(prob)
-                        successor = (i, hidden, cell, new_prob, new_path)
+                        successor = (i, hidden, new_prob, new_path)
                         # function ADDTOBEAM
 
                         if len(extended_frontier) < beam_width:
@@ -280,7 +330,7 @@ class Seq2SeqBeam(nn.Module):
                             # once the extended frontier is full, need to establish the worst position
                             if len(extended_frontier) == beam_width:
                                 for i, state in enumerate(extended_frontier):
-                                    idx, h, c, p, p_path = state
+                                    idx, h, p, p_path = state
                                     if p < worst_prob:
                                         worst_prob = p
                                         worst_idx = i
@@ -290,7 +340,7 @@ class Seq2SeqBeam(nn.Module):
                             # once we replace the worst state, need to re establish what the new worst state is
                             worst_prob = new_prob
                             for i, state in enumerate(extended_frontier):
-                                idx, h, c, p, p_path = state
+                                idx, h, p, p_path = state
                                 if p < worst_prob:
                                     worst_prob = p
                                     worst_idx = i
@@ -298,7 +348,7 @@ class Seq2SeqBeam(nn.Module):
                 copy_idxs = []
                 for i, state in enumerate(extended_frontier):
                     # check to see if state is complete, which means ends at eos token
-                    idx, h, c, prob, path = state
+                    idx, h, prob, path = state
                     if idx == self.eos:
                         complete_paths.append((path, prob))
                         beam_width -= 1
@@ -313,8 +363,8 @@ class Seq2SeqBeam(nn.Module):
             # we now have the complete paths variable that contains tuples of (path, prob)
             # we are going to pick the max prob path and return that
             if len(complete_paths) == 0:
-                probs = np.asarray([p for i, h, c, p, pa in frontier])
-                paths = [pa for i, h, c, p, pa in frontier]
+                probs = np.asarray([p for i, h, p, pa in frontier])
+                paths = [pa for i, h, p, pa in frontier]
                 idx = probs.argmax()
                 return paths[idx]
             else:
