@@ -20,7 +20,7 @@ import time
 import math
 import random
 from itertools import chain
-from tqdm.auto import tqdm
+from tqdm import tqdm
 
 
 class Encoder(nn.Module):
@@ -403,7 +403,7 @@ class Trainer(object):
         running_loss = 0.
         running_loss_history = []
 
-        for i, batch in tqdm(enumerate(loader)):
+        for i, batch in enumerate(tqdm(loader)):
             X = batch.message.to(self.device)
             y = batch.reply.to(self.device)
             # print(f'Train X_shape: {X.shape}')

@@ -49,14 +49,15 @@ REPLY.build_vocab(
     unk_init=torch.Tensor.normal_
 )
 
-# max batch size allowable on Austin's machine: 128
-# important, need to note what batch size each model runs on
-# second_big_model.pt runs on 16
-# first_big_model.pt runs on ???
-BATCH_SIZE = 64
+# 64 seems to work for 14 million parameters on 50,000 lines of training input
+# 100 doesn't work for the above mentioned parameters
+# 75 starts fine
+BATCH_SIZE = 75
 
-# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-device = 'cpu'
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# use the CPU when running the model
+# device = 'cpu'
 
 train_iterator, valid_iterator = data.BucketIterator.splits(
     (train_data, valid_data),
@@ -105,12 +106,12 @@ if TRAIN:
 
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
-    lstm_trainer.run_training(train_iterator, valid_iterator, n_epochs=10)
+    lstm_trainer.run_training(train_iterator, valid_iterator, n_epochs=40)
 
-    torch.save(model.state_dict(), 'attn_small_model.pt')
+    torch.save(model.state_dict(), 'attn_big_model.pt')
 
 else:
-    model.load_state_dict(torch.load('attn_small_model.pt'))
+    model.load_state_dict(torch.load('attn_big_model.pt'))
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
     # first step to predict is to vectorize a message
