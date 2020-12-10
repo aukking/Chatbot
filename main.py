@@ -37,27 +37,35 @@ train_data, valid_data = data.TabularDataset.splits(
     skip_header=True
 )
 
+UNK_THRESH = 3
+
 MESSAGE.build_vocab(
     train_data,
     vectors='glove.6B.50d',
+    min_freq = UNK_THRESH,
     unk_init=torch.Tensor.normal_
 )
 
 REPLY.build_vocab(
     train_data,
     vectors='glove.6B.50d',
+    min_freq = UNK_THRESH,
     unk_init=torch.Tensor.normal_
 )
 
 # 64 seems to work for 14 million parameters on 50,000 lines of training input
 # 100 doesn't work for the above mentioned parameters
 # 75 starts fine
-BATCH_SIZE = 75
+BATCH_SIZE = 128
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# variable used to toggle if we want to train or run the model
+TRAIN = True
 
-# use the CPU when running the model
-# device = 'cpu'
+if TRAIN:
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+else:
+    # use the CPU when running the model
+    device = 'cpu'
 
 train_iterator, valid_iterator = data.BucketIterator.splits(
     (train_data, valid_data),
@@ -77,9 +85,6 @@ DEC_DROPOUT = 0.25
 PAD_IDX = REPLY.vocab.stoi[REPLY.pad_token]
 SOS = REPLY.vocab.stoi['<sos>']
 EOS = REPLY.vocab.stoi['<eos>']
-
-# variable used to toggle if we want to train or run the model
-TRAIN = True
 
 attn = Attention(HIDDEN_DIM)
 enc = Encoder(INPUT_DIM, ENC_EMBEDDING_DIM, HIDDEN_DIM, N_LAYERS, ENC_DROPOUT)
@@ -108,10 +113,10 @@ if TRAIN:
 
     lstm_trainer.run_training(train_iterator, valid_iterator, n_epochs=40)
 
-    torch.save(model.state_dict(), 'attn_big_model.pt')
+    torch.save(model.state_dict(), 'attn_big_lowunk.pt')
 
 else:
-    model.load_state_dict(torch.load('attn_big_model.pt'))
+    model.load_state_dict(torch.load('attn_big_lowunk.pt'))
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
     # first step to predict is to vectorize a message

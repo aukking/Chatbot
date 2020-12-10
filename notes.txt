@@ -1,0 +1,5 @@
+important to note, when running a model, you need to use the same training file so the vocab is fitted the same
+attn_big_model:
+    UNK_THRESH = 10
+    training on first 50,000 conversations
+    2 million parameters, able to run on 256 batch size
