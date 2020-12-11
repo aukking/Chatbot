@@ -577,7 +577,7 @@ def count_parameters(model):
 
 def vectorize_input(sent, field):
     nlp = spacy.load('en_core_web_sm')
-    tokens = [token.text for token in nlp(sent)]
+    tokens = [token.text.lower() for token in nlp(sent)]
 
     numericalized_tokens = [field.vocab.stoi[t] for t in tokens]
     unk_idx = field.vocab.stoi[field.unk_token]
