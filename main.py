@@ -59,7 +59,7 @@ REPLY.build_vocab(
 BATCH_SIZE = 128
 
 # variable used to toggle if we want to train or run the model
-TRAIN = True
+TRAIN = False
 
 if TRAIN:
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
