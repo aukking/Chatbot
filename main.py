@@ -37,26 +37,27 @@ train_data, valid_data = data.TabularDataset.splits(
     skip_header=True
 )
 
-UNK_THRESH = 3
+UNK_THRESH = 1
 
 MESSAGE.build_vocab(
     train_data,
     vectors='glove.6B.50d',
-    min_freq = UNK_THRESH,
-    unk_init=torch.Tensor.normal_
+    min_freq=UNK_THRESH,
+    unk_init=torch.Tensor.zero_
 )
 
 REPLY.build_vocab(
     train_data,
     vectors='glove.6B.50d',
-    min_freq = UNK_THRESH,
-    unk_init=torch.Tensor.normal_
+    min_freq=UNK_THRESH,
+    unk_init=torch.Tensor.zero_
 )
 
 # 64 seems to work for 14 million parameters on 50,000 lines of training input
 # 100 doesn't work for the above mentioned parameters
 # 75 starts fine
-BATCH_SIZE = 128
+# 128 works fine for 3 million parameters
+BATCH_SIZE = 32
 
 # variable used to toggle if we want to train or run the model
 TRAIN = False
@@ -78,7 +79,7 @@ INPUT_DIM = len(MESSAGE.vocab)
 OUTPUT_DIM = len(REPLY.vocab)
 ENC_EMBEDDING_DIM = 50
 DEC_EMBEDDING_DIM = 50
-HIDDEN_DIM = 50
+HIDDEN_DIM = 250
 N_LAYERS = 2
 ENC_DROPOUT = 0.25
 DEC_DROPOUT = 0.25
@@ -113,10 +114,10 @@ if TRAIN:
 
     lstm_trainer.run_training(train_iterator, valid_iterator, n_epochs=40)
 
-    torch.save(model.state_dict(), 'attn_big_lowunk.pt')
+    torch.save(model.state_dict(), 'last_model.pt')
 
 else:
-    model.load_state_dict(torch.load('attn_big_lowunk.pt'))
+    model.load_state_dict(torch.load('last_model.pt'))
     lstm_trainer = Trainer(model, optimizer, criterion, device=device)
 
     # first step to predict is to vectorize a message

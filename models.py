@@ -238,7 +238,7 @@ class Seq2Seq(nn.Module):
 
 
 class Seq2SeqBeam(nn.Module):
-    def __init__(self, encoder, decoder, device, max_seq_length=20, beam_size=2, sos=-1, eos=-1):
+    def __init__(self, encoder, decoder, device, max_seq_length=50, beam_size=2, sos=-1, eos=-1):
         super().__init__()
 
         self.encoder = encoder
@@ -530,26 +530,26 @@ class Trainer(object):
 
         for i in range(n_epochs):
             loss_history, running_loss_history = self.train(train_loader)
-            valid_loss_history, valid_running_loss_history = self.evaluate(valid_loader)
+            # valid_loss_history, valid_running_loss_history = self.evaluate(valid_loader)
 
             train_losses.append(loss_history)
             train_running_losses.append(running_loss_history)
 
-            valid_losses.append(valid_loss_history)
-            valid_running_losses.append(valid_running_loss_history)
+            # valid_losses.append(valid_loss_history)
+            # valid_running_losses.append(valid_running_loss_history)
 
         # Training done, let's look at the loss curves
         all_train_losses = list(chain.from_iterable(train_losses))
         all_train_running_losses = list(chain.from_iterable(train_running_losses))
 
-        all_valid_losses = list(chain.from_iterable(valid_losses))
-        all_valid_running_losses = list(chain.from_iterable(valid_running_losses))
+        # all_valid_losses = list(chain.from_iterable(valid_losses))
+        # all_valid_running_losses = list(chain.from_iterable(valid_running_losses))
 
         train_epoch_idx = range(len(all_train_losses))
-        valid_epoch_idx = range(len(all_valid_losses))
+        # valid_epoch_idx = range(len(all_valid_losses))
         # sns.lineplot(epoch_idx, all_losses)
         sns.lineplot(train_epoch_idx, all_train_running_losses)
-        sns.lineplot(valid_epoch_idx, all_valid_running_losses)
+        # sns.lineplot(valid_epoch_idx, all_valid_running_losses)
         # plt.show()
 
     def run_prediction(self, train_loader, test_loader, n_epochs=10):
